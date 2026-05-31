@@ -14,7 +14,14 @@ uploaded_file = st.sidebar.file_uploader("Upload REMAS Input Excel File", type=[
 
 st.sidebar.header("2. Parameter Settings")
 method = st.sidebar.radio("Select Calculation Method", ["VCRE", "MUN"])
-ref_line = st.sidebar.slider("Set Total Emission Reference (kg NH3 / GVE / yr)", min_value=5.0, max_value=20.0, value=11.3, step=0.1)
+
+# --- NEW: Independent Reference Sliders ---
+st.sidebar.subheader("Reference Thresholds")
+ref_stable = st.sidebar.slider("Stable Emission Reference (kg NH3 / GVE / yr)", min_value=3.0, max_value=15.0, value=7.9, step=0.1)
+ref_app = st.sidebar.slider("Application Emission Reference (kg NH3 / GVE / yr)", min_value=1.0, max_value=10.0, value=3.4, step=0.1)
+
+# Calculate total reference dynamically
+ref_total = ref_stable + ref_app
 
 if uploaded_file is not None:
     with st.spinner("Running REMAS model... Please wait."):
@@ -25,13 +32,10 @@ if uploaded_file is not None:
             st.error(f"An error occurred during calculation: {e}")
             st.stop()
     
-    # ==========================================
-    # CORE FIX 1: Filter out ghost empty rows from Excel
-    # We use 'Nr_koe' (Number of cows) as the validation metric.
-    # ==========================================
+    # Filter out empty rows
     if 'Nr_koe' in df.columns:
-        df = df.dropna(subset=['Nr_koe'])  # Remove NaN rows
-        df = df[df['Nr_koe'] > 0]          # Remove rows where cow count is 0
+        df = df.dropna(subset=['Nr_koe'])
+        df = df[df['Nr_koe'] > 0]
 
     # Fallback/mocking to ensure Farm_ID and Round exist
     if 'Farm_ID' not in df.columns:
@@ -39,61 +43,53 @@ if uploaded_file is not None:
     if 'Round' not in df.columns:
         df['Round'] = ["Round_1" if i % 2 == 0 else "Round_2" for i in range(len(df))]
 
-    # Dynamic column names based on selected method
     col_total_emission = f"NH3_Emission_per_GVE_{method}"
     col_stable_emission = f"Stable_Emission_per_GVE_{method}"
     
-    # ==========================================
-    # CORE FIX 2: Normalize Field Application Emission
-    # Sum up Manure and Fertiliser app emissions, then divide by GVE
-    # ==========================================
+    # Normalize Field Application Emission
     safe_gve = np.where(df['Total_GVE_Farm'] > 0, df['Total_GVE_Farm'], 1.0)
     df['App_Emission_per_GVE'] = (df['Emission_ManureApp_Total'] + df['Emission_FertiliserApp']) / safe_gve
 
-    # Flag farms that exceed the total threshold
-    df['Status'] = df[col_total_emission].apply(lambda x: 'Above Threshold' if x > ref_line else 'Below Threshold')
+    # Overall Status based on the SUM of the two references
+    df['Status'] = df[col_total_emission].apply(lambda x: 'Above Total Threshold' if x > ref_total else 'Below Total Threshold')
+    
+    # Independent statuses for color coding the separate charts
+    df['Stable_Status'] = df[col_stable_emission].apply(lambda x: 'Above' if x > ref_stable else 'Below')
+    df['App_Status'] = df['App_Emission_per_GVE'].apply(lambda x: 'Above' if x > ref_app else 'Below')
 
     st.header("📊 Individual Farm Emission Comparison (Normalized per GVE)")
     
-    # ==========================================
-    # CORE FIX 3: Split charts into Stable and Application
-    # ==========================================
-    
     # ---- Chart 1: Stable & Storage Emission ----
-    st.subheader("🏠 1. Stable & Storage Emission")
+    st.subheader(f"🏠 1. Stable & Storage Emission (Threshold: {ref_stable} kg/GVE)")
     fig_stable = px.bar(
         df, 
         x="Farm_ID", 
         y=col_stable_emission, 
-        color_discrete_sequence=["#1f77b4"], # Uniform Blue
+        color="Stable_Status",
+        color_discrete_map={"Above": "#d62728", "Below": "#1f77b4"}, # Red if above, Blue if below
         hover_data=['Total_GVE_Farm'],
-        labels={col_stable_emission: f"Stable Emission ({method}) [kg/GVE/yr]"}
+        labels={col_stable_emission: f"Stable Emission ({method}) [kg/GVE/yr]", "Stable_Status": "Status"}
     )
-    # Set reference line for stable emission at 70% of total reference line
-    stable_ref = ref_line * 0.70
-    fig_stable.add_hline(y=stable_ref, line_dash="dash", line_color="orange", annotation_text=f"Stable Ref (~{stable_ref:.1f})")
+    fig_stable.add_hline(y=ref_stable, line_dash="dash", line_color="black", annotation_text=f"Ref: {ref_stable}")
     st.plotly_chart(fig_stable, use_container_width=True)
 
-
     # ---- Chart 2: Application Emission ----
-    st.subheader("🚜 2. Field Application Emission")
+    st.subheader(f"🚜 2. Field Application Emission (Threshold: {ref_app} kg/GVE)")
     fig_app = px.bar(
         df, 
         x="Farm_ID", 
         y="App_Emission_per_GVE", 
-        color_discrete_sequence=["#2ca02c"], # Uniform Green
+        color="App_Status",
+        color_discrete_map={"Above": "#d62728", "Below": "#2ca02c"}, # Red if above, Green if below
         hover_data=['Emission_ManureApp_Total', 'Emission_FertiliserApp'],
-        labels={"App_Emission_per_GVE": "Application Emission [kg/GVE/yr]"}
+        labels={"App_Emission_per_GVE": "Application Emission [kg/GVE/yr]", "App_Status": "Status"}
     )
-    # Set reference line for application emission at 30% of total reference line
-    app_ref = ref_line * 0.30
-    fig_app.add_hline(y=app_ref, line_dash="dash", line_color="orange", annotation_text=f"Application Ref (~{app_ref:.1f})")
+    fig_app.add_hline(y=ref_app, line_dash="dash", line_color="black", annotation_text=f"Ref: {ref_app}")
     st.plotly_chart(fig_app, use_container_width=True)
-
     
     # Display statistics
-    above_count = len(df[df['Status'] == 'Above Threshold'])
-    st.warning(f"💡 Note: Combining Stable and Application, a total of **{above_count}** farm(s) exceed the overall reference line of {ref_line} kg/GVE/yr.")
+    above_count = len(df[df['Status'] == 'Above Total Threshold'])
+    st.warning(f"💡 Note: Combining Stable and Application, a total of **{above_count}** farm(s) exceed the overall reference line of **{ref_total:.1f} kg/GVE/yr**.")
 
     st.markdown("---")
 
