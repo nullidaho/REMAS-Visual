@@ -43,6 +43,8 @@ if uploaded_file is not None:
     if 'Round' not in df.columns:
         df['Round'] = ["Round_1" if i % 2 == 0 else "Round_2" for i in range(len(df))]
 
+    df['Round'] = df['Round'].astype(str)
+    
     col_total_emission = f"NH3_Emission_per_GVE_{method}"
     col_stable_emission = f"Stable_Emission_per_GVE_{method}"
     
